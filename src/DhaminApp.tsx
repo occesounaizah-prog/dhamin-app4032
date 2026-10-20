@@ -78,35 +78,31 @@ export default function DhaminApp() {
   const logout = () => { clearSession(); setScreen("welcome"); };
 
   useEffect(() => {
-    if (screen === "welcome" || screen === "login" || screen === "otp") return;
-    let pushed = false;
-    try { history.pushState({ dhamin: true }, ""); pushed = true; } catch { /* ignore */ }
     const onPop = () => {
       const cur = screenRef.current;
+      if (cur === "welcome" || cur === "login" || cur === "otp") return;
       const subScreens: Screen[] = ["chat", "offers", "conversations", "lounge", "proposal", "dashboard-detail", "payment", "success"];
       if (subScreens.includes(cur)) {
         try { history.pushState({ dhamin: true }, ""); } catch { /* ignore */ }
         goHome();
       } else if (cur === "home") {
-        const now = Date.now();
-        if (lastBackRef.current && now - lastBackRef.current < 2000) {
+        const ts = Date.now();
+        if (lastBackRef.current && ts - lastBackRef.current < 2000) {
           lastBackRef.current = 0;
           clearSession();
           setScreen("welcome");
         } else {
-          lastBackRef.current = now;
+          lastBackRef.current = ts;
           setBackToast(true);
           try { history.pushState({ dhamin: true }, ""); } catch { /* ignore */ }
           setTimeout(() => setBackToast(false), 1900);
         }
       }
     };
+    try { history.pushState({ dhamin: true }, ""); } catch { /* ignore */ }
     window.addEventListener("popstate", onPop);
-    return () => {
-      window.removeEventListener("popstate", onPop);
-      if (pushed) try { history.back(); } catch { /* ignore */ }
-    };
-  }, [screen]);
+    return () => { window.removeEventListener("popstate", onPop); };
+  }, []);
 
   const lastBackRef = useRef(0);
   const [backToast, setBackToast] = useState(false);

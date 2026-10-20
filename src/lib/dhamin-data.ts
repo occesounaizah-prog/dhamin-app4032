@@ -81,6 +81,14 @@ export async function insertRequest(row: { id: string; title: string; sector: st
   if (error) throw error;
 }
 
+export async function incrementRequestBids(requestId: string): Promise<void> {
+  const { data, error } = await supabase.from("requests").select("bids").eq("id", requestId).maybeSingle();
+  if (error || !data) return;
+  const next = (data.bids ?? 0) + 1;
+  const { error: updateError } = await supabase.from("requests").update({ bids: next }).eq("id", requestId);
+  if (updateError) throw updateError;
+}
+
 export async function insertConversation(row: { id: string; request_id: string; title: string; client_name: string; provider_name: string; last_message: string; last_message_time: string }): Promise<void> {
   const { error } = await supabase.from("conversations").insert({ id: row.id, request_id: row.request_id, title: row.title, client_name: row.client_name, provider_name: row.provider_name, last_message: row.last_message, last_message_time: row.last_message_time });
   if (error) throw error;
