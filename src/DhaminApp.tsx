@@ -182,6 +182,7 @@ export default function DhaminApp() {
   const pending = taameeds.filter((t) => t.status === "pending_payment").length;
   const hasPaidTaameed = taameeds.some((t) => t.status === "paid");
   const hasPendingTaameed = taameeds.some((t) => t.status === "pending_payment");
+  const currentConversationPaid = taameeds.some((t) => t.conversationId === activeConversationId && t.status === "paid");
 
   const currentConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const msgs = messagesByConversation[activeConversationId] ?? [];
@@ -313,7 +314,7 @@ export default function DhaminApp() {
   };
 
   const withdrawFromAgreement = () => {
-    if (hasPaidTaameed) return;
+    if (currentConversationPaid) return;
     const request = activeOffer?.request ?? requests.find((r) => r.id === currentConversation?.requestId);
     const offerId = activeOffer?.offer?.id;
     const time = now();
@@ -573,7 +574,7 @@ export default function DhaminApp() {
                 <p className="text-xs text-navy-foreground/60">{hasPaidTaameed ? "⚠️ تحت التحكيم المالي" : "متصل الآن"}</p>
               </div>
               <div className="flex items-center gap-2">
-                {!hasPaidTaameed && <button onClick={() => setWithdrawConfirm(true)} className="h-10 px-3 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card text-xs font-bold flex items-center gap-1"><X className="size-4" /> انسحاب</button>}
+                {!currentConversationPaid && <button onClick={() => setWithdrawConfirm(true)} className="h-10 px-3 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card text-xs font-bold flex items-center gap-1"><X className="size-4" /> انسحاب</button>}
                 {hasPaidTaameed && <button onClick={confirmRaiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
