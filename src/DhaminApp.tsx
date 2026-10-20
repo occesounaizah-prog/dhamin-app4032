@@ -1,7 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   Shield, Scale, Send, ArrowRight, Briefcase, Building2, Home, MessageSquare, Compass,
-  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye,
+  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye, CheckCheck, Check, Bell,
 } from "lucide-react";
 import { ATTACHMENTS_BUCKET, supabase } from "@/lib/supabase";
 import {
@@ -9,6 +9,7 @@ import {
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
   insertRequest, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
+  insertOffer, updateOfferStatus, markMessagesRead, fetchUnreadCount, fetchTotalUnread,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -46,6 +47,10 @@ export default function DhaminApp() {
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [bidSent, setBidSent] = useState<string[]>([]);
   const [newReq, setNewReq] = useState({ title: "", sector: "أبشر", desc: "" });
+  const [bidModalFor, setBidModalFor] = useState<RequestRow | null>(null);
+  const [unreadByConv, setUnreadByConv] = useState<Record<string, number>>({});
+  const [totalUnread, setTotalUnread] = useState(0);
+  const [lastMsgCount, setLastMsgCount] = useState(0);
 
   const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId);
 
@@ -77,15 +82,40 @@ export default function DhaminApp() {
       .channel("dhamin-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => { void fetchConversations().then(setConversations); })
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
-        const row = payload.new as { conversation_id: string };
-        if (row?.conversation_id) void fetchMessages(row.conversation_id).then((msgs) => setMessagesByConversation((items) => ({ ...items, [row.conversation_id]: msgs })));
+        const row = payload.new as { conversation_id: string; sender: string };
+        if (row?.conversation_id) {
+          void fetchMessages(row.conversation_id).then((msgs) => {
+            setMessagesByConversation((items) => ({ ...items, [row.conversation_id]: msgs }));
+            // Play notification for incoming messages (not from me, not system, not from chat screen for this conversation)
+            const isIncoming = row.sender !== "system" && row.sender !== role;
+            if (isIncoming && (screen !== "chat" || row.conversation_id !== activeConversationId)) {
+              playNotificationSound();
+            }
+          });
+          void refreshUnread();
+        }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "taameeds" }, () => { void fetchTaameeds().then(setTaameeds); })
       .on("postgres_changes", { event: "*", schema: "public", table: "requests" }, () => { void fetchRequests().then(setRequests); })
       .on("postgres_changes", { event: "*", schema: "public", table: "offers" }, () => { void fetchAllOffers().then(setAllOffers); })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, []);
+  }, [role, screen, activeConversationId]);
+
+  const refreshUnread = async () => {
+    try {
+      const total = await fetchTotalUnread(role);
+      setTotalUnread(total);
+      const convUnreads: Record<string, number> = {};
+      await Promise.all(conversations.map(async (c) => {
+        const count = await fetchUnreadCount(c.id, role);
+        if (count > 0) convUnreads[c.id] = count;
+      }));
+      setUnreadByConv(convUnreads);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { void refreshUnread(); }, [conversations, role]);
 
   const loadMessages = async (conversationId: string) => {
     try {
@@ -128,6 +158,7 @@ export default function DhaminApp() {
     setActiveConversationId(conversationId);
     void loadMessages(conversationId);
     void loadConversationTaameeds(conversationId);
+    void markMessagesRead(conversationId, role).then(() => void refreshUnread());
     setScreen("chat");
   };
 
@@ -205,14 +236,16 @@ export default function DhaminApp() {
     if (screen === "chat") {
       void loadMessages(activeConversationId);
       void loadConversationTaameeds(activeConversationId);
+      void markMessagesRead(activeConversationId, role).then(() => void refreshUnread());
     }
-  }, [activeConversationId, screen]);
+  }, [activeConversationId, screen, role]);
 
   const acceptOffer = (offer: OfferRow) => {
     const request = requests.find((item) => item.id === selectedRequestId) ?? requests[0];
     const conversationId = `conv-${request.id}-${offer.id}`;
     setActiveOffer({ offer, request });
     setActiveConversationId(conversationId);
+    void updateOfferStatus(offer.id, "accepted");
     void insertConversation({ id: conversationId, request_id: request.id, title: request.title, client_name: "أبو يزن", provider_name: offer.muqeeb, last_message: "تم قبول العرض وبدأ التوافق.", last_message_time: now() }).then(() => {
       void insertMessage({ id: `m-${Date.now()}`, conversation_id: conversationId, sender: "system", text: `تم قبول عرض ${offer.muqeeb}. بدأت المحادثة للتوافق على التفاصيل قبل إنشاء التعميد.`, taameed_id: null, display_time: now() });
     }).catch(() => setDataError("تعذر إنشاء المحادثة."));
@@ -345,7 +378,7 @@ export default function DhaminApp() {
               <div className="grid grid-cols-2 gap-3">
                 <Stat label="المبالغ المحجوزة بالضمان" value={fmtSAR(escrow)} money wide />
                 <Stat label="معاملات مكتملة" value="12" onClick={() => openDashboardDetail("المعاملات المكتملة")} />
-                <Stat label="عروض بانتظارك" value={String(selectedOffers.length)} onClick={() => openDashboardDetail("عروض الأسعار", "offers")} />
+                <Stat label="عروض بانتظارك" value={String(selectedOffers.filter((o) => o.status === "pending").length)} onClick={() => openDashboardDetail("عروض الأسعار", "offers")} />
                 <Stat label="بانتظار السداد" value={String(pending)} onClick={() => openDashboardDetail("المحادثات بانتظار السداد", "conversations")} />
                 <Stat label="نزاعات" value={hasPaidTaameed ? "1" : "0"} onClick={() => openDashboardDetail("النزاعات", "chat")} />
               </div>
@@ -389,7 +422,11 @@ export default function DhaminApp() {
                 </div>
                 <p className="text-sm text-muted-foreground">{o.note}</p>
                 <div className="flex items-center gap-1 text-sm text-navy"><Clock className="size-4" /> مدة الإنجاز: {o.days} أيام</div>
-                <PrimaryBtn onClick={() => acceptOffer(o)}>قبول العرض وفتح المحادثة</PrimaryBtn>
+                {o.status === "pending" ? (
+                  <PrimaryBtn onClick={() => acceptOffer(o)}>موافقة وتفاهم — فتح المحادثة</PrimaryBtn>
+                ) : (
+                  <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تمت الموافقة ونقل المعاملة للمحادثات</p>
+                )}
               </div>
             ))}
           </main>
@@ -413,7 +450,7 @@ export default function DhaminApp() {
               <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border p-4 shadow-card space-y-2 transition hover:border-money">
                 <div className="flex items-start gap-3">
                   <div className="size-11 rounded-xl bg-money-soft text-money grid place-items-center shrink-0"><MessageSquare className="size-5" /></div>
-                  <div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className="font-bold truncate">{conversation.title}</p><span className="text-xs text-muted-foreground whitespace-nowrap">{conversation.time}</span></div><p className="text-xs text-navy mt-1">{role === "client" ? conversation.providerName : conversation.clientName}</p><p className="text-sm text-muted-foreground truncate mt-1">{conversation.lastMessage}</p></div>
+                  <div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className="font-bold truncate">{conversation.title}</p><span className="text-xs text-muted-foreground whitespace-nowrap">{conversation.time}</span></div><p className="text-xs text-navy mt-1">{role === "client" ? conversation.providerName : conversation.clientName}</p><div className="flex items-center gap-2 mt-1"><p className="text-sm text-muted-foreground truncate flex-1">{conversation.lastMessage}</p>{(unreadByConv[conversation.id] ?? 0) > 0 && <span className="shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-money text-money-foreground text-[10px] font-black grid place-items-center">{unreadByConv[conversation.id]}</span>}</div></div>
                 </div>
               </button>
             ))}
@@ -449,8 +486,8 @@ export default function DhaminApp() {
                 <p className="text-sm text-muted-foreground">{r.desc}</p>
                 {role === "muqeeb" ? (
                   bidSent.includes(r.id)
-                    ? <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تم إرسال عرضك</p>
-                    : <PrimaryBtn onClick={() => setBidSent([...bidSent, r.id])}>تقديم عرض سعر فوري</PrimaryBtn>
+                    ? <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تم إرسال عرضك وهو قيد انتظار موافقة العميل</p>
+                    : <PrimaryBtn onClick={() => setBidModalFor(r)}>تقديم عرض سعر</PrimaryBtn>
                 ) : (
                   <button onClick={() => { setSelectedRequestId(r.id); setScreen("offers"); }} className="text-sm font-bold text-navy">مقارنة عروض هذه المعاملة ←</button>
                 )}
@@ -498,7 +535,13 @@ export default function DhaminApp() {
                 return (
                   <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
                     <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-6 ${mine ? "bg-money text-money-foreground rounded-tr-sm" : "bg-background border rounded-tl-sm"}`}>
-                      {m.text}<p className={`text-[10px] mt-1 ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
+                      {m.text}
+                      <div className={`flex items-center gap-1 mt-1 ${mine ? "justify-end" : "justify-start"}`}>
+                        <p className={`text-[10px] ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
+                        {mine && (
+                          m.readAt ? <CheckCheck className="size-3.5 text-money-foreground/80" /> : <Check className="size-3.5 text-money-foreground/50" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -532,7 +575,7 @@ export default function DhaminApp() {
           <nav className="bg-background border-t grid grid-cols-4 py-2 shrink-0">
             <NavBtn icon={<Home />} label="الرئيسية" active={screen === "home"} onClick={() => setScreen("home")} />
             <NavBtn icon={<Compass />} label="الصالة" active={screen === "lounge"} onClick={() => setScreen("lounge")} />
-            <NavBtn icon={<MessageSquare />} label="المحادثات" active={screen === "conversations"} onClick={() => setScreen("conversations")} />
+            <NavBtn icon={<><div className="relative"><MessageSquare /><span className="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-money text-money-foreground text-[8px] font-black grid place-items-center" style={{ display: totalUnread > 0 ? "grid" : "none" }}>{totalUnread}</span></div></>} label="المحادثات" active={screen === "conversations"} onClick={() => setScreen("conversations")} />
             {role === "client"
               ? <NavBtn icon={<Wallet />} label="العروض" active={screen === "offers"} onClick={() => setScreen("offers")} />
               : <NavBtn icon={<FileText />} label="عرض سعر" active={screen === "proposal"} onClick={() => setScreen("proposal")} />}
@@ -540,6 +583,19 @@ export default function DhaminApp() {
         )}
 
         {sheet && <CreateTaameedSheet onClose={() => setSheet(false)} onSubmit={createTaameed} />}
+
+        {bidModalFor && (
+          <BidModal
+            request={bidModalFor}
+            onClose={() => setBidModalFor(null)}
+            onSubmit={(details, price, days) => {
+              const offerId = "O" + Date.now();
+              void insertOffer({ id: offerId, request_id: bidModalFor.id, muqeeb: "مكتب الرياض للتعقيب", rating: 4.9, price, days, note: details, status: "pending" });
+              setBidSent([...bidSent, bidModalFor.id]);
+              setBidModalFor(null);
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -666,6 +722,30 @@ function PaymentScreen({ t, onBack, onDone }: { t: Taameed; onBack: () => void; 
           {loading ? <><Loader2 className="size-5 animate-spin" /> جاري المعالجة...</> : "تأكيد الدفع الآمن وعزل المبلغ 🔒"}
         </PrimaryBtn>
         <p className="text-center text-xs text-muted-foreground">نموذج تجريبي — لا يتم خصم أي مبلغ فعلي</p>
+      </div>
+    </div>
+  );
+}
+
+function BidModal({ request, onClose, onSubmit }: { request: RequestRow; onClose: () => void; onSubmit: (details: string, price: number, days: number) => void }) {
+  const [details, setDetails] = useState("");
+  const [price, setPrice] = useState("");
+  const [days, setDays] = useState("");
+  return (
+    <div className="absolute inset-0 z-20 bg-navy-deep/60 flex items-end" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full bg-background rounded-t-3xl p-5 space-y-3 animate-in slide-in-from-bottom">
+        <div className="mx-auto w-12 h-1.5 rounded-full bg-border" />
+        <div className="flex justify-between items-center">
+          <div><h3 className="font-black text-lg text-navy">تقديم عرض سعر</h3><p className="text-xs text-muted-foreground mt-0.5">{request.title}</p></div>
+          <button onClick={onClose} aria-label="إغلاق"><X /></button>
+        </div>
+        <Field label="تفاصيل العرض"><textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={3} className="w-full rounded-xl border px-3 py-3 outline-none" placeholder="اشرح منهجية التنفيذ والملاحظات..." /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="السعر التقريبي (ر.س)"><input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" className="w-full rounded-xl border px-3 py-3 outline-none font-bold text-money" /></Field>
+          <Field label="مدة الإنجاز (أيام)"><input value={days} onChange={(e) => setDays(e.target.value.replace(/\D/g, ""))} inputMode="numeric" className="w-full rounded-xl border px-3 py-3 outline-none" /></Field>
+        </div>
+        <div className="rounded-xl bg-gold-soft p-3 text-xs text-navy leading-6 flex gap-2"><CheckCircle2 className="size-4 shrink-0 mt-0.5" /> سيتم إرسال عرضك للعميل بانتظار موافقته. لا يتم القبول فورياً حتى يوافق العميل ويتوافق معك.</div>
+        <PrimaryBtn disabled={!details || !Number(price) || !Number(days)} onClick={() => onSubmit(details, Number(price), Number(days))}>إرسال العرض للعميل</PrimaryBtn>
       </div>
     </div>
   );

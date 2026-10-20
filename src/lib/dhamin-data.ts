@@ -5,21 +5,21 @@ export type TStatus = "pending_payment" | "paid";
 
 export interface Taameed { id: string; conversationId: string; title: string; terms: string; amount: number; date: string; status: TStatus }
 export interface MsgAttachment { name: string; path: string; mimeType: string; size: number }
-export interface Msg { id: string; conversationId: string; from: Role | "system"; text?: string; taameedId?: string; time: string; attachment?: MsgAttachment }
-export interface OfferRow { id: string; requestId: string; muqeeb: string; rating: number; price: number; days: number; note: string }
+export interface Msg { id: string; conversationId: string; from: Role | "system"; text?: string; taameedId?: string; time: string; attachment?: MsgAttachment; readAt?: string | null }
+export interface OfferRow { id: string; requestId: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: "pending" | "accepted" }
 export interface RequestRow { id: string; title: string; sector: string; desc: string; bids: number; budget: string }
 export interface ConversationRow { id: string; requestId: string; title: string; clientName: string; providerName: string; lastMessage: string; time: string }
 
 interface RequestDb { id: string; title: string; sector: string; description: string; bids: number; budget: string }
-interface OfferDb { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string }
+interface OfferDb { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: "pending" | "accepted" }
 interface ConversationDb { id: string; request_id: string; title: string; client_name: string; provider_name: string; last_message: string; last_message_time: string }
-interface MessageDb { id: string; conversation_id: string; sender: string; text: string | null; taameed_id: string | null; display_time: string; attachment_path: string | null; attachment_name: string | null; attachment_mimetype: string | null; attachment_size: number | null }
+interface MessageDb { id: string; conversation_id: string; sender: string; text: string | null; taameed_id: string | null; display_time: string; attachment_path: string | null; attachment_name: string | null; attachment_mimetype: string | null; attachment_size: number | null; read_at: string | null }
 interface TaameedDb { id: string; conversation_id: string; title: string; terms: string; amount: number; date: string; status: TStatus }
 
 const mapRequest = (r: RequestDb): RequestRow => ({ id: r.id, title: r.title, sector: r.sector, desc: r.description, bids: r.bids, budget: r.budget });
-const mapOffer = (o: OfferDb): OfferRow => ({ id: o.id, requestId: o.request_id, muqeeb: o.muqeeb, rating: Number(o.rating), price: o.price, days: o.days, note: o.note });
+const mapOffer = (o: OfferDb): OfferRow => ({ id: o.id, requestId: o.request_id, muqeeb: o.muqeeb, rating: Number(o.rating), price: o.price, days: o.days, note: o.note, status: (o.status as "pending" | "accepted") ?? "pending" });
 const mapConversation = (c: ConversationDb): ConversationRow => ({ id: c.id, requestId: c.request_id, title: c.title, clientName: c.client_name, providerName: c.provider_name, lastMessage: c.last_message, time: c.last_message_time });
-const mapMessage = (m: MessageDb): Msg => ({ id: m.id, conversationId: m.conversation_id, from: m.sender as Role | "system", text: m.text ?? undefined, taameedId: m.taameed_id ?? undefined, time: m.display_time, attachment: m.attachment_path ? { name: m.attachment_name ?? "", path: m.attachment_path, mimeType: m.attachment_mimetype ?? "application/octet-stream", size: m.attachment_size ?? 0 } : undefined });
+const mapMessage = (m: MessageDb): Msg => ({ id: m.id, conversationId: m.conversation_id, from: m.sender as Role | "system", text: m.text ?? undefined, taameedId: m.taameed_id ?? undefined, time: m.display_time, attachment: m.attachment_path ? { name: m.attachment_name ?? "", path: m.attachment_path, mimeType: m.attachment_mimetype ?? "application/octet-stream", size: m.attachment_size ?? 0 } : undefined, readAt: m.read_at });
 const mapTaameed = (t: TaameedDb): Taameed => ({ id: t.id, conversationId: t.conversation_id, title: t.title, terms: t.terms, amount: Number(t.amount), date: t.date, status: t.status });
 
 export async function fetchRequests(): Promise<RequestRow[]> {
@@ -108,4 +108,39 @@ export async function fetchDispute(conversationId: string): Promise<boolean> {
   const { data, error } = await supabase.from("disputes").select("conversation_id").eq("conversation_id", conversationId).maybeSingle();
   if (error) return false;
   return !!data;
+}
+
+export async function insertOffer(row: { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status?: "pending" | "accepted" }): Promise<void> {
+  const { error } = await supabase.from("offers").insert({ id: row.id, request_id: row.request_id, muqeeb: row.muqeeb, rating: row.rating, price: row.price, days: row.days, note: row.note, status: row.status ?? "pending" });
+  if (error) throw error;
+}
+
+export async function updateOfferStatus(offerId: string, status: "pending" | "accepted"): Promise<void> {
+  const { error } = await supabase.from("offers").update({ status }).eq("id", offerId);
+  if (error) throw error;
+}
+
+export async function markMessagesRead(conversationId: string, recipientRole: Role): Promise<void> {
+  const { error } = await supabase.from("messages").update({ read_at: new Date().toISOString() }).eq("conversation_id", conversationId).eq("sender", recipientRole === "client" ? "muqeeb" : "client").is("read_at", null);
+  if (error) throw error;
+}
+
+export async function fetchUnreadCount(conversationId: string, recipientRole: Role): Promise<number> {
+  const sender = recipientRole === "client" ? "muqeeb" : "client";
+  const { count, error } = await supabase.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", conversationId).eq("sender", sender).is("read_at", null);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+export async function fetchTotalUnread(recipientRole: Role): Promise<number> {
+  const sender = recipientRole === "client" ? "muqeeb" : "client";
+  const { count, error } = await supabase.from("messages").select("id", { count: "exact", head: true }).eq("sender", sender).is("read_at", null);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+export async function markMessagesDelivered(conversationId: string, recipientRole: Role): Promise<void> {
+  // Delivered = message exists (no explicit column needed). This is a no-op placeholder for future delivery tracking.
+  void conversationId;
+  void recipientRole;
 }
