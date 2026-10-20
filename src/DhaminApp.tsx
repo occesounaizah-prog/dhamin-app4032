@@ -9,6 +9,8 @@ import {
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
   insertRequest, insertOffer, incrementRequestBids, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
+  markMessagesRead, fetchUnreadCount, fetchTotalUnread,
+  updateConversationArchived,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -65,6 +67,7 @@ export default function DhaminApp() {
   const [newReq, setNewReq] = useState({ title: "", sector: "أبشر", desc: "" });
   const [offerModal, setOfferModal] = useState<RequestRow | null>(null);
   const [disputeConfirm, setDisputeConfirm] = useState(false);
+  const [closeConfirm, setCloseConfirm] = useState(false);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const roleRef = useRef<Role>(role);
   const screenRef = useRef<Screen>(screen);
@@ -342,6 +345,20 @@ export default function DhaminApp() {
 
   const confirmRaiseDispute = () => setDisputeConfirm(true);
 
+  const closeConversation = () => {
+    const time = now();
+    void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم إغلاق المحادثة من قبل الطرف قبل الدفع. يمكن إعادة فتح الطلب من الصالة.", taameed_id: null, display_time: time }).then(() => {
+      void deleteTaameedsByConversation(activeConversationId).then(() => {
+        void updateConversationArchived(activeConversationId, true).then(() => {
+          void fetchConversations().then(setConversations);
+        });
+      });
+    });
+    setActiveOffer(null);
+    setCloseConfirm(false);
+    setScreen("conversations");
+  };
+
   const submitOffer = (request: RequestRow, price: number, days: number, note: string) => {
     const id = "O" + Date.now();
     const muqeebName = "مكتب الرياض للتعقيب المعتمد";
@@ -566,6 +583,7 @@ export default function DhaminApp() {
                 <p className="text-xs text-navy-foreground/60">{hasPaidTaameed ? "⚠️ تحت التحكيم المالي" : "متصل الآن"}</p>
               </div>
               <div className="flex items-center gap-2">
+                {!hasPaidTaameed && <button onClick={() => setCloseConfirm(true)} className="size-10 rounded-full bg-destructive/15 text-destructive grid place-items-center shadow-card" aria-label="إغلاق المحادثة"><LogOut className="size-5" /></button>}
                 {hasPendingTaameed && <button onClick={withdrawFromAgreement} className="size-10 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card" aria-label="الانسحاب وإعادة الطلب للصالة"><X className="size-5" /></button>}
                 {hasPaidTaameed && <button onClick={confirmRaiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
@@ -638,6 +656,7 @@ export default function DhaminApp() {
         {sheet && <CreateTaameedSheet onClose={() => setSheet(false)} onSubmit={createTaameed} />}
         {offerModal && <OfferSheet request={offerModal} onClose={() => setOfferModal(null)} onSubmit={(price, days, note) => submitOffer(offerModal, price, days, note)} />}
         {disputeConfirm && <ConfirmDialog title="تأكيد رفع النزاع" message="سيتم رفع نزاع مالي إلى إدارة التحكيم وتجميد المبالغ المحجوزة لحين البت. هل أنت متأكد؟" confirmLabel="نعم، رفع النزاع" destructive onConfirm={raiseDispute} onCancel={() => setDisputeConfirm(false)} />}
+        {closeConfirm && <ConfirmDialog title="تأكيد إغلاق المحادثة" message="سيتم إغلاق المحادثة وإلغاء أي تعميد غير مدفوع. لا يمكن التراجع عن هذا الإجراء. هل أنت متأكد؟" confirmLabel="نعم، إغلاق المحادثة" destructive onConfirm={closeConversation} onCancel={() => setCloseConfirm(false)} />}
         {backToast && (
           <div className="absolute bottom-24 inset-x-0 z-40 flex justify-center pointer-events-none">
             <div className="bg-navy-deep/95 text-navy-foreground text-sm font-bold px-4 py-2.5 rounded-full shadow-elevated">اضغط زر الرجوع مرة أخرى للخروج</div>
