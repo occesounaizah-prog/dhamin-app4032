@@ -9,6 +9,7 @@ import {
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
   insertRequest, insertOffer, incrementRequestBids, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
+  updateOfferStatus, updateConversationArchived,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -65,6 +66,7 @@ export default function DhaminApp() {
   const [newReq, setNewReq] = useState({ title: "", sector: "أبشر", desc: "" });
   const [offerModal, setOfferModal] = useState<RequestRow | null>(null);
   const [disputeConfirm, setDisputeConfirm] = useState(false);
+  const [withdrawConfirm, setWithdrawConfirm] = useState(false);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const roleRef = useRef<Role>(role);
   const screenRef = useRef<Screen>(screen);
@@ -107,7 +109,7 @@ export default function DhaminApp() {
   const lastBackRef = useRef(0);
   const [backToast, setBackToast] = useState(false);
 
-  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId);
+  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId && o.status === "pending");
 
   useEffect(() => {
     if (screen !== "otp" || timer === 0) return;
@@ -292,6 +294,7 @@ export default function DhaminApp() {
     const conversationId = `conv-${request.id}-${offer.id}`;
     setActiveOffer({ offer, request });
     setActiveConversationId(conversationId);
+    void updateOfferStatus(offer.id, "accepted");
     void insertConversation({ id: conversationId, request_id: request.id, title: request.title, client_name: "أبو يزن", provider_name: offer.muqeeb, last_message: "تم قبول العرض وبدأ التوافق.", last_message_time: now() }).then(() => {
       void insertMessage({ id: `m-${Date.now()}`, conversation_id: conversationId, sender: "system", text: `تم قبول عرض ${offer.muqeeb}. بدأت المحادثة للتوافق على التفاصيل قبل إنشاء التعميد.`, taameed_id: null, display_time: now() });
     }).catch(() => setDataError("تعذر إنشاء المحادثة."));
@@ -310,15 +313,19 @@ export default function DhaminApp() {
   };
 
   const withdrawFromAgreement = () => {
-    const request = activeOffer?.request;
-    if (!request || hasPaidTaameed) return;
+    if (hasPaidTaameed) return;
+    const request = activeOffer?.request ?? requests.find((r) => r.id === currentConversation?.requestId);
+    const offerId = activeOffer?.offer?.id;
     const time = now();
     void deleteTaameedsByConversation(activeConversationId).then(() => {
-      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع وإعادة الطلب إلى صالة العروض للتقديم من جديد.", taameed_id: null, display_time: time });
-      void updateConversationPreview(activeConversationId, "عاد الطلب إلى صالة العروض", time);
+      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع. أعيد الطلب إلى صالة العروض ويمكن لمقدم الخدمة تقديم عرض جديد.", taameed_id: null, display_time: time });
+      void updateConversationPreview(activeConversationId, "تم الانسحاب وأعيد الطلب للصالة", time);
+      void updateConversationArchived(activeConversationId, true);
+      if (offerId) void updateOfferStatus(offerId, "withdrawn");
     });
     setActiveOffer(null);
-    setScreen("lounge");
+    if (request?.id) setBidSent((ids) => ids.filter((id) => id !== request.id));
+    setScreen("conversations");
   };
 
   const confirmPaid = (id: string) => {
@@ -566,7 +573,7 @@ export default function DhaminApp() {
                 <p className="text-xs text-navy-foreground/60">{hasPaidTaameed ? "⚠️ تحت التحكيم المالي" : "متصل الآن"}</p>
               </div>
               <div className="flex items-center gap-2">
-                {hasPendingTaameed && <button onClick={withdrawFromAgreement} className="size-10 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card" aria-label="الانسحاب وإعادة الطلب للصالة"><X className="size-5" /></button>}
+                {!hasPaidTaameed && <button onClick={() => setWithdrawConfirm(true)} className="h-10 px-3 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card text-xs font-bold flex items-center gap-1"><X className="size-4" /> انسحاب</button>}
                 {hasPaidTaameed && <button onClick={confirmRaiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
@@ -579,7 +586,7 @@ export default function DhaminApp() {
                 if (t) {
                   return (
                     <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
-                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} onWithdraw={withdrawFromAgreement} />
+                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} />
                     </div>
                   );
                 }
@@ -635,6 +642,16 @@ export default function DhaminApp() {
           </nav>
         )}
 
+        {withdrawConfirm && (
+          <ConfirmDialog
+            title="تأكيد الانسحاب"
+            message="سيتم إغلاق هذه المحادثة وإعادتها إلى صالة العروض. يمكن للعميل قبول عرض آخر، ويمكن لمقدم الخدمة تقديم عرض جديد على نفس المعاملة."
+            confirmLabel="نعم، انسحاب"
+            destructive
+            onConfirm={() => { setWithdrawConfirm(false); withdrawFromAgreement(); }}
+            onCancel={() => setWithdrawConfirm(false)}
+          />
+        )}
         {sheet && <CreateTaameedSheet onClose={() => setSheet(false)} onSubmit={createTaameed} />}
         {offerModal && <OfferSheet request={offerModal} onClose={() => setOfferModal(null)} onSubmit={(price, days, note) => submitOffer(offerModal, price, days, note)} />}
         {disputeConfirm && <ConfirmDialog title="تأكيد رفع النزاع" message="سيتم رفع نزاع مالي إلى إدارة التحكيم وتجميد المبالغ المحجوزة لحين البت. هل أنت متأكد؟" confirmLabel="نعم، رفع النزاع" destructive onConfirm={raiseDispute} onCancel={() => setDisputeConfirm(false)} />}
@@ -648,7 +665,7 @@ export default function DhaminApp() {
   );
 }
 
-function TaameedCard({ t, role, onPay, onWithdraw }: { t: Taameed; role: Role; onPay: () => void; onWithdraw: () => void }) {
+function TaameedCard({ t, role, onPay }: { t: Taameed; role: Role; onPay: () => void }) {
   return (
     <div className="w-[88%] bg-background rounded-2xl border-2 border-gold/60 shadow-card p-4 space-y-3">
       <div className="flex items-center gap-2"><Shield className="size-5 text-gold fill-gold/20" /><p className="font-black text-navy">طلب تعميد مالي رسمي</p><span className="mr-auto text-[10px] text-muted-foreground">{t.id}</span></div>
@@ -664,7 +681,6 @@ function TaameedCard({ t, role, onPay, onWithdraw }: { t: Taameed; role: Role; o
       ) : (
         <div className={`w-full py-3 rounded-xl text-center font-bold text-sm ${t.status === "paid" ? "bg-money-soft text-money" : "bg-gold-soft text-navy"}`}>{t.status === "paid" ? "التعميد نشط - قيد التنفيذ" : "بانتظار سداد العميل"}</div>
       )}
-      {t.status === "pending_payment" && <button onClick={onWithdraw} className="w-full py-2.5 rounded-xl border border-destructive/30 text-destructive font-bold text-sm">الانسحاب وإعادة الطلب إلى الصالة</button>}
     </div>
   );
 }
