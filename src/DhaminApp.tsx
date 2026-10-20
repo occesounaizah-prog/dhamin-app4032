@@ -53,6 +53,7 @@ export default function DhaminApp() {
   const [totalUnread, setTotalUnread] = useState(0);
   const [lastMsgCount, setLastMsgCount] = useState(0);
   const [archivedConversations, setArchivedConversations] = useState<ConversationRow[]>([]);
+  const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
 
   const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId && o.status === "pending");
 
@@ -267,9 +268,10 @@ export default function DhaminApp() {
   };
 
   const withdrawFromAgreement = () => {
-    const request = activeOffer?.request;
-    if (!request || hasPaidTaameed) return;
+    if (hasPaidTaameed) return;
+    const request = activeOffer?.request ?? requests.find((r) => r.id === currentConversation?.requestId);
     const offerId = activeOffer?.offer?.id;
+    const requestId = request?.id ?? currentConversation?.requestId ?? "";
     const time = now();
     void deleteTaameedsByConversation(activeConversationId).then(() => {
       void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع. أعيد الطلب إلى صالة العروض ويمكن لمقدم الخدمة تقديم عرض جديد.", taameed_id: null, display_time: time });
@@ -278,7 +280,7 @@ export default function DhaminApp() {
       if (offerId) void updateOfferStatus(offerId, "withdrawn");
     });
     setActiveOffer(null);
-    setBidSent((ids) => ids.filter((id) => id !== request.id));
+    if (requestId) setBidSent((ids) => ids.filter((id) => id !== requestId));
     setScreen("lounge");
   };
 
@@ -527,7 +529,7 @@ export default function DhaminApp() {
                 <p className="text-xs text-navy-foreground/60">{hasPaidTaameed ? "⚠️ تحت التحكيم المالي" : "متصل الآن"}</p>
               </div>
               <div className="flex items-center gap-2">
-                {hasPendingTaameed && <button onClick={withdrawFromAgreement} className="size-10 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card" aria-label="الانسحاب وإعادة الطلب للصالة"><X className="size-5" /></button>}
+                {!hasPaidTaameed && <button onClick={() => setShowWithdrawConfirm(true)} className="h-10 px-3 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card text-xs font-bold gap-1 flex items-center"><X className="size-4" /> انسحاب</button>}
                 {hasPaidTaameed && <button onClick={raiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
@@ -540,7 +542,7 @@ export default function DhaminApp() {
                 if (t) {
                   return (
                     <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
-                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} onWithdraw={withdrawFromAgreement} />
+                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} />
                     </div>
                   );
                 }
@@ -602,6 +604,20 @@ export default function DhaminApp() {
           </nav>
         )}
 
+        {showWithdrawConfirm && (
+          <div className="absolute inset-0 z-30 bg-navy-deep/60 grid place-items-center p-6" onClick={() => setShowWithdrawConfirm(false)}>
+            <div onClick={(e) => e.stopPropagation()} className="bg-background rounded-2xl p-6 space-y-4 max-w-sm w-full text-center animate-in zoom-in">
+              <div className="size-14 rounded-full bg-gold-soft grid place-items-center mx-auto"><AlertTriangle className="size-7 text-gold" /></div>
+              <h3 className="font-black text-lg text-navy">تأكيد الانسحاب</h3>
+              <p className="text-sm text-muted-foreground leading-6">سيتم إغلاق هذه المحادثة وإعادتها إلى صالة العروض. يمكن للعميل قبول عرض آخر، ويمكن لمقدم الخدمة تقديم عرض جديد على نفس المعاملة.</p>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setShowWithdrawConfirm(false)} className="flex-1 py-3 rounded-xl border font-bold text-sm">إلغاء</button>
+                <button onClick={() => { setShowWithdrawConfirm(false); withdrawFromAgreement(); }} className="flex-1 py-3 rounded-xl bg-destructive text-destructive-foreground font-black text-sm">نعم، انسحاب</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {sheet && <CreateTaameedSheet onClose={() => setSheet(false)} onSubmit={createTaameed} />}
 
         {bidModalFor && (
@@ -621,7 +637,7 @@ export default function DhaminApp() {
   );
 }
 
-function TaameedCard({ t, role, onPay, onWithdraw }: { t: Taameed; role: Role; onPay: () => void; onWithdraw: () => void }) {
+function TaameedCard({ t, role, onPay }: { t: Taameed; role: Role; onPay: () => void }) {
   return (
     <div className="w-[88%] bg-background rounded-2xl border-2 border-gold/60 shadow-card p-4 space-y-3">
       <div className="flex items-center gap-2"><Shield className="size-5 text-gold fill-gold/20" /><p className="font-black text-navy">طلب تعميد مالي رسمي</p><span className="mr-auto text-[10px] text-muted-foreground">{t.id}</span></div>
@@ -637,7 +653,7 @@ function TaameedCard({ t, role, onPay, onWithdraw }: { t: Taameed; role: Role; o
       ) : (
         <div className={`w-full py-3 rounded-xl text-center font-bold text-sm ${t.status === "paid" ? "bg-money-soft text-money" : "bg-gold-soft text-navy"}`}>{t.status === "paid" ? "التعميد نشط - قيد التنفيذ" : "بانتظار سداد العميل"}</div>
       )}
-      {t.status === "pending_payment" && <button onClick={onWithdraw} className="w-full py-2.5 rounded-xl border border-destructive/30 text-destructive font-bold text-sm">الانسحاب وإعادة الطلب إلى الصالة</button>}
+
     </div>
   );
 }
