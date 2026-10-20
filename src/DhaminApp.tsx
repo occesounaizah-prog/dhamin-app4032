@@ -9,7 +9,6 @@ import {
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
   insertRequest, insertOffer, incrementRequestBids, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
-  markMessagesRead, fetchUnreadCount, fetchTotalUnread,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -71,7 +70,6 @@ export default function DhaminApp() {
   const screenRef = useRef<Screen>(screen);
   const activeConvRef = useRef<string>(activeConversationId);
   const audioRef = useRef<AudioContext | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { roleRef.current = role; }, [role]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
   useEffect(() => { activeConvRef.current = activeConversationId; }, [activeConversationId]);
@@ -124,10 +122,6 @@ export default function DhaminApp() {
       setConversations(convs);
       setAllOffers(offers);
       setTaameeds(taams);
-      const unreadEntries = await Promise.all(convs.map(async (c) => [c.id, await fetchUnreadCount(c.id, role)] as const));
-      const unreadMap: Record<string, number> = {};
-      for (const [id, count] of unreadEntries) { if (count > 0) unreadMap[id] = count; }
-      setUnread(unreadMap);
       setDataError("");
     } catch {
       setDataError("تعذر تحميل البيانات. تحقق من الاتصال.");
@@ -207,9 +201,6 @@ export default function DhaminApp() {
     setUnread((u) => { const n = { ...u }; delete n[conversationId]; return n; });
     void loadMessages(conversationId);
     void loadConversationTaameeds(conversationId);
-    void markMessagesRead(conversationId, role).then(() => {
-      void loadMessages(conversationId);
-    });
     setScreen("chat");
   };
 
@@ -283,17 +274,11 @@ export default function DhaminApp() {
   const notifyOtherParty = () => {
     const recipient = role === "client" ? currentConversation?.providerName : currentConversation?.clientName;
     const time = now();
-    void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: role, text: `🔔 تنبيه إلى ${recipient}: يرجى الرد على هذه المحادثة.`, taameed_id: null, display_time: time }).then(() => {
-      void updateConversationPreview(activeConversationId, "🔔 تم إرسال تنبيه", time);
+    void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: `تم إرسال تنبيه إلى ${recipient}.`, taameed_id: null, display_time: time }).then(() => {
+      void updateConversationPreview(activeConversationId, "تم إرسال تنبيه", time);
     });
     playNotificationSound();
   };
-
-  useEffect(() => {
-    if (screen === "chat" && chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
-  }, [msgs, screen, activeConversationId]);
 
   useEffect(() => {
     if (screen === "chat") {
@@ -586,7 +571,7 @@ export default function DhaminApp() {
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
             </header>
-            <div ref={chatScrollRef} className="flex-1 overflow-y-auto bg-surface p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto bg-surface p-4 space-y-3">
               {msgs.map((m) => {
                 if (m.from === "system") return <p key={m.id} className="text-center text-xs bg-gold-soft text-navy rounded-xl px-3 py-2 mx-6">{m.text}</p>;
                 const mine = m.from === role;
@@ -601,15 +586,13 @@ export default function DhaminApp() {
                 if (m.attachment) {
                   const isImage = m.attachment.mimeType.startsWith("image/");
                   return (
-                    <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"} items-end gap-1`}>
-                      {!mine && !m.readAt && <span className="size-2 rounded-full bg-money shrink-0" aria-label="غير مقروءة" />}
+                    <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
                       <AttachmentBubble attachment={m.attachment} mine={mine} time={m.time} onView={() => void viewAttachment(m.attachment!)} onDownload={() => void downloadAttachment(m.attachment!)} />
                     </div>
                   );
                 }
                 return (
-                  <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"} items-end gap-1`}>
-                    {!mine && !m.readAt && <span className="size-2 rounded-full bg-money shrink-0" aria-label="غير مقروءة" />}
+                  <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
                     <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-6 ${mine ? "bg-money text-money-foreground rounded-tr-sm" : "bg-background border rounded-tl-sm"}`}>
                       {m.text}<p className={`text-[10px] mt-1 ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
                     </div>
