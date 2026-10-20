@@ -71,6 +71,7 @@ export default function DhaminApp() {
   const screenRef = useRef<Screen>(screen);
   const activeConvRef = useRef<string>(activeConversationId);
   const audioRef = useRef<AudioContext | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { roleRef.current = role; }, [role]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
   useEffect(() => { activeConvRef.current = activeConversationId; }, [activeConversationId]);
@@ -287,6 +288,12 @@ export default function DhaminApp() {
     });
     playNotificationSound();
   };
+
+  useEffect(() => {
+    if (screen === "chat" && chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [msgs, screen, activeConversationId]);
 
   useEffect(() => {
     if (screen === "chat") {
@@ -579,7 +586,7 @@ export default function DhaminApp() {
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
             </header>
-            <div className="flex-1 overflow-y-auto bg-surface p-4 space-y-3">
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto bg-surface p-4 space-y-3">
               {msgs.map((m) => {
                 if (m.from === "system") return <p key={m.id} className="text-center text-xs bg-gold-soft text-navy rounded-xl px-3 py-2 mx-6">{m.text}</p>;
                 const mine = m.from === role;
