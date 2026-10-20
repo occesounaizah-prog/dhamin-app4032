@@ -1,7 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   Shield, Scale, Send, ArrowRight, Briefcase, Building2, Home, MessageSquare, Compass,
-  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye, CheckCheck, Check, Bell,
+  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye, CheckCheck, Check, Bell, Archive,
 } from "lucide-react";
 import { ATTACHMENTS_BUCKET, supabase } from "@/lib/supabase";
 import {
@@ -10,6 +10,7 @@ import {
   insertRequest, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
   insertOffer, updateOfferStatus, markMessagesRead, fetchUnreadCount, fetchTotalUnread,
+  updateConversationArchived, fetchArchivedConversations,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -51,8 +52,9 @@ export default function DhaminApp() {
   const [unreadByConv, setUnreadByConv] = useState<Record<string, number>>({});
   const [totalUnread, setTotalUnread] = useState(0);
   const [lastMsgCount, setLastMsgCount] = useState(0);
+  const [archivedConversations, setArchivedConversations] = useState<ConversationRow[]>([]);
 
-  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId);
+  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId && o.status === "pending");
 
   useEffect(() => {
     if (screen !== "otp" || timer === 0) return;
@@ -62,11 +64,12 @@ export default function DhaminApp() {
 
   const loadData = async () => {
     try {
-      const [reqs, convs, offers, taams] = await Promise.all([fetchRequests(), fetchConversations(), fetchAllOffers(), fetchTaameeds()]);
+      const [reqs, convs, offers, taams, archived] = await Promise.all([fetchRequests(), fetchConversations(), fetchAllOffers(), fetchTaameeds(), fetchArchivedConversations()]);
       setRequests(reqs);
       setConversations(convs);
       setAllOffers(offers);
       setTaameeds(taams);
+      setArchivedConversations(archived);
       setDataError("");
     } catch {
       setDataError("تعذر تحميل البيانات. تحقق من الاتصال.");
@@ -80,7 +83,7 @@ export default function DhaminApp() {
   useEffect(() => {
     const channel = supabase
       .channel("dhamin-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => { void fetchConversations().then(setConversations); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => { void fetchConversations().then(setConversations); void fetchArchivedConversations().then(setArchivedConversations); })
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
         const row = payload.new as { conversation_id: string; sender: string };
         if (row?.conversation_id) {
@@ -266,12 +269,16 @@ export default function DhaminApp() {
   const withdrawFromAgreement = () => {
     const request = activeOffer?.request;
     if (!request || hasPaidTaameed) return;
+    const offerId = activeOffer?.offer?.id;
     const time = now();
     void deleteTaameedsByConversation(activeConversationId).then(() => {
-      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع وإعادة الطلب إلى صالة العروض للتقديم من جديد.", taameed_id: null, display_time: time });
-      void updateConversationPreview(activeConversationId, "عاد الطلب إلى صالة العروض", time);
+      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع. أعيد الطلب إلى صالة العروض ويمكن لمقدم الخدمة تقديم عرض جديد.", taameed_id: null, display_time: time });
+      void updateConversationPreview(activeConversationId, "تم الانسحاب وأعيد الطلب للصالة", time);
+      void updateConversationArchived(activeConversationId, true);
+      if (offerId) void updateOfferStatus(offerId, "withdrawn");
     });
     setActiveOffer(null);
+    setBidSent((ids) => ids.filter((id) => id !== request.id));
     setScreen("lounge");
   };
 
@@ -378,7 +385,7 @@ export default function DhaminApp() {
               <div className="grid grid-cols-2 gap-3">
                 <Stat label="المبالغ المحجوزة بالضمان" value={fmtSAR(escrow)} money wide />
                 <Stat label="معاملات مكتملة" value="12" onClick={() => openDashboardDetail("المعاملات المكتملة")} />
-                <Stat label="عروض بانتظارك" value={String(selectedOffers.filter((o) => o.status === "pending").length)} onClick={() => openDashboardDetail("عروض الأسعار", "offers")} />
+                <Stat label="عروض بانتظارك" value={String(selectedOffers.length)} onClick={() => openDashboardDetail("عروض الأسعار", "offers")} />
                 <Stat label="بانتظار السداد" value={String(pending)} onClick={() => openDashboardDetail("المحادثات بانتظار السداد", "conversations")} />
                 <Stat label="نزاعات" value={hasPaidTaameed ? "1" : "0"} onClick={() => openDashboardDetail("النزاعات", "chat")} />
               </div>
@@ -414,6 +421,7 @@ export default function DhaminApp() {
             <div className="space-y-2">
               {requests.map((request) => <button key={request.id} onClick={() => setSelectedRequestId(request.id)} className={`w-full text-right rounded-xl border p-3 ${selectedRequestId === request.id ? "border-money bg-money-soft" : "bg-background"}`}><p className="font-bold text-sm">{request.title}</p><p className="text-xs text-muted-foreground mt-1">{request.bids} عروض متاحة</p></button>)}
             </div>
+            {selectedOffers.length === 0 && <p className="text-center text-sm text-muted-foreground py-8">لا توجد عروض متاحة لهذه المعاملة حالياً.</p>}
             {selectedOffers.map((o) => (
               <div key={o.id} className="rounded-2xl border p-4 shadow-card space-y-3">
                 <div className="flex justify-between items-start">
@@ -446,6 +454,7 @@ export default function DhaminApp() {
               <div><h2 className="font-black text-lg text-navy">المحادثات</h2><p className="text-sm text-muted-foreground">محادثة مستقلة لكل معاملة</p></div>
               <MessageSquare className="text-money" />
             </div>
+            {conversations.length === 0 && <p className="text-center text-sm text-muted-foreground py-8">لا توجد محادثات نشطة حالياً.</p>}
             {conversations.map((conversation) => (
               <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border p-4 shadow-card space-y-2 transition hover:border-money">
                 <div className="flex items-start gap-3">
@@ -454,6 +463,17 @@ export default function DhaminApp() {
                 </div>
               </button>
             ))}
+            {archivedConversations.length > 0 && (
+              <div className="pt-4 space-y-2">
+                <h3 className="font-bold text-sm text-muted-foreground">الأرشيف</h3>
+                {archivedConversations.map((conversation) => (
+                  <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border border-dashed p-3 space-y-1 opacity-60 hover:opacity-100 transition">
+                    <div className="flex items-center gap-2"><Archive className="size-4 text-muted-foreground" /><p className="font-bold text-sm truncate flex-1">{conversation.title}</p></div>
+                    <p className="text-xs text-muted-foreground">{conversation.lastMessage}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </main>
         )}
 

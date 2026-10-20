@@ -6,19 +6,20 @@ export type TStatus = "pending_payment" | "paid";
 export interface Taameed { id: string; conversationId: string; title: string; terms: string; amount: number; date: string; status: TStatus }
 export interface MsgAttachment { name: string; path: string; mimeType: string; size: number }
 export interface Msg { id: string; conversationId: string; from: Role | "system"; text?: string; taameedId?: string; time: string; attachment?: MsgAttachment; readAt?: string | null }
-export interface OfferRow { id: string; requestId: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: "pending" | "accepted" }
+export type OfferStatus = "pending" | "accepted" | "withdrawn";
+export interface OfferRow { id: string; requestId: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: OfferStatus }
 export interface RequestRow { id: string; title: string; sector: string; desc: string; bids: number; budget: string }
-export interface ConversationRow { id: string; requestId: string; title: string; clientName: string; providerName: string; lastMessage: string; time: string }
+export interface ConversationRow { id: string; requestId: string; title: string; clientName: string; providerName: string; lastMessage: string; time: string; archived: boolean }
 
 interface RequestDb { id: string; title: string; sector: string; description: string; bids: number; budget: string }
-interface OfferDb { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: "pending" | "accepted" }
-interface ConversationDb { id: string; request_id: string; title: string; client_name: string; provider_name: string; last_message: string; last_message_time: string }
+interface OfferDb { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status: OfferStatus }
+interface ConversationDb { id: string; request_id: string; title: string; client_name: string; provider_name: string; last_message: string; last_message_time: string; archived: boolean }
 interface MessageDb { id: string; conversation_id: string; sender: string; text: string | null; taameed_id: string | null; display_time: string; attachment_path: string | null; attachment_name: string | null; attachment_mimetype: string | null; attachment_size: number | null; read_at: string | null }
 interface TaameedDb { id: string; conversation_id: string; title: string; terms: string; amount: number; date: string; status: TStatus }
 
 const mapRequest = (r: RequestDb): RequestRow => ({ id: r.id, title: r.title, sector: r.sector, desc: r.description, bids: r.bids, budget: r.budget });
 const mapOffer = (o: OfferDb): OfferRow => ({ id: o.id, requestId: o.request_id, muqeeb: o.muqeeb, rating: Number(o.rating), price: o.price, days: o.days, note: o.note, status: (o.status as "pending" | "accepted") ?? "pending" });
-const mapConversation = (c: ConversationDb): ConversationRow => ({ id: c.id, requestId: c.request_id, title: c.title, clientName: c.client_name, providerName: c.provider_name, lastMessage: c.last_message, time: c.last_message_time });
+const mapConversation = (c: ConversationDb): ConversationRow => ({ id: c.id, requestId: c.request_id, title: c.title, clientName: c.client_name, providerName: c.provider_name, lastMessage: c.last_message, time: c.last_message_time, archived: c.archived ?? false });
 const mapMessage = (m: MessageDb): Msg => ({ id: m.id, conversationId: m.conversation_id, from: m.sender as Role | "system", text: m.text ?? undefined, taameedId: m.taameed_id ?? undefined, time: m.display_time, attachment: m.attachment_path ? { name: m.attachment_name ?? "", path: m.attachment_path, mimeType: m.attachment_mimetype ?? "application/octet-stream", size: m.attachment_size ?? 0 } : undefined, readAt: m.read_at });
 const mapTaameed = (t: TaameedDb): Taameed => ({ id: t.id, conversationId: t.conversation_id, title: t.title, terms: t.terms, amount: Number(t.amount), date: t.date, status: t.status });
 
@@ -41,9 +42,20 @@ export async function fetchAllOffers(): Promise<OfferRow[]> {
 }
 
 export async function fetchConversations(): Promise<ConversationRow[]> {
-  const { data, error } = await supabase.from("conversations").select("*").order("created_at", { ascending: false });
+  const { data, error } = await supabase.from("conversations").select("*").eq("archived", false).order("created_at", { ascending: false });
   if (error) throw error;
   return (data ?? []).map(mapConversation);
+}
+
+export async function fetchArchivedConversations(): Promise<ConversationRow[]> {
+  const { data, error } = await supabase.from("conversations").select("*").eq("archived", true).order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(mapConversation);
+}
+
+export async function updateConversationArchived(conversationId: string, archived: boolean): Promise<void> {
+  const { error } = await supabase.from("conversations").update({ archived }).eq("id", conversationId);
+  if (error) throw error;
 }
 
 export async function fetchMessages(conversationId: string): Promise<Msg[]> {
@@ -110,12 +122,12 @@ export async function fetchDispute(conversationId: string): Promise<boolean> {
   return !!data;
 }
 
-export async function insertOffer(row: { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status?: "pending" | "accepted" }): Promise<void> {
+export async function insertOffer(row: { id: string; request_id: string; muqeeb: string; rating: number; price: number; days: number; note: string; status?: OfferStatus }): Promise<void> {
   const { error } = await supabase.from("offers").insert({ id: row.id, request_id: row.request_id, muqeeb: row.muqeeb, rating: row.rating, price: row.price, days: row.days, note: row.note, status: row.status ?? "pending" });
   if (error) throw error;
 }
 
-export async function updateOfferStatus(offerId: string, status: "pending" | "accepted"): Promise<void> {
+export async function updateOfferStatus(offerId: string, status: OfferStatus): Promise<void> {
   const { error } = await supabase.from("offers").update({ status }).eq("id", offerId);
   if (error) throw error;
 }
