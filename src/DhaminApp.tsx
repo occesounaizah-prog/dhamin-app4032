@@ -9,6 +9,7 @@ import {
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
   insertRequest, insertOffer, incrementRequestBids, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
+  markMessagesRead, fetchUnreadCount, fetchTotalUnread,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -122,6 +123,10 @@ export default function DhaminApp() {
       setConversations(convs);
       setAllOffers(offers);
       setTaameeds(taams);
+      const unreadEntries = await Promise.all(convs.map(async (c) => [c.id, await fetchUnreadCount(c.id, role)] as const));
+      const unreadMap: Record<string, number> = {};
+      for (const [id, count] of unreadEntries) { if (count > 0) unreadMap[id] = count; }
+      setUnread(unreadMap);
       setDataError("");
     } catch {
       setDataError("تعذر تحميل البيانات. تحقق من الاتصال.");
@@ -201,6 +206,9 @@ export default function DhaminApp() {
     setUnread((u) => { const n = { ...u }; delete n[conversationId]; return n; });
     void loadMessages(conversationId);
     void loadConversationTaameeds(conversationId);
+    void markMessagesRead(conversationId, role).then(() => {
+      void loadMessages(conversationId);
+    });
     setScreen("chat");
   };
 
@@ -274,8 +282,8 @@ export default function DhaminApp() {
   const notifyOtherParty = () => {
     const recipient = role === "client" ? currentConversation?.providerName : currentConversation?.clientName;
     const time = now();
-    void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: `تم إرسال تنبيه إلى ${recipient}.`, taameed_id: null, display_time: time }).then(() => {
-      void updateConversationPreview(activeConversationId, "تم إرسال تنبيه", time);
+    void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: role, text: `🔔 تنبيه إلى ${recipient}: يرجى الرد على هذه المحادثة.`, taameed_id: null, display_time: time }).then(() => {
+      void updateConversationPreview(activeConversationId, "🔔 تم إرسال تنبيه", time);
     });
     playNotificationSound();
   };
@@ -586,13 +594,15 @@ export default function DhaminApp() {
                 if (m.attachment) {
                   const isImage = m.attachment.mimeType.startsWith("image/");
                   return (
-                    <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
+                    <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"} items-end gap-1`}>
+                      {!mine && !m.readAt && <span className="size-2 rounded-full bg-money shrink-0" aria-label="غير مقروءة" />}
                       <AttachmentBubble attachment={m.attachment} mine={mine} time={m.time} onView={() => void viewAttachment(m.attachment!)} onDownload={() => void downloadAttachment(m.attachment!)} />
                     </div>
                   );
                 }
                 return (
-                  <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
+                  <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"} items-end gap-1`}>
+                    {!mine && !m.readAt && <span className="size-2 rounded-full bg-money shrink-0" aria-label="غير مقروءة" />}
                     <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-6 ${mine ? "bg-money text-money-foreground rounded-tr-sm" : "bg-background border rounded-tl-sm"}`}>
                       {m.text}<p className={`text-[10px] mt-1 ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
                     </div>
