@@ -67,6 +67,7 @@ export default function DhaminApp() {
   const [offerModal, setOfferModal] = useState<RequestRow | null>(null);
   const [disputeConfirm, setDisputeConfirm] = useState(false);
   const [withdrawConfirm, setWithdrawConfirm] = useState(false);
+  const [viewer, setViewer] = useState<MsgAttachment | null>(null);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const roleRef = useRef<Role>(role);
   const screenRef = useRef<Screen>(screen);
@@ -240,16 +241,25 @@ export default function DhaminApp() {
       setAttachmentError("تعذر تجهيز تحميل الملف حالياً.");
       return;
     }
-    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+    try {
+      const res = await fetch(data.signedUrl);
+      if (!res.ok) throw new Error("fetch failed");
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = attachment.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
+    } catch {
+      setAttachmentError("تعذر تنزيل الملف. حاول مرة أخرى.");
+    }
   };
 
-  const viewAttachment = async (attachment: MsgAttachment) => {
-    const { data, error } = await supabase.storage.from(ATTACHMENTS_BUCKET).createSignedUrl(attachment.path, 300);
-    if (error || !data?.signedUrl) {
-      setAttachmentError("تعذر فتح الملف حالياً.");
-      return;
-    }
-    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  const viewAttachment = (attachment: MsgAttachment) => {
+    setViewer(attachment);
   };
 
   const playNotificationSound = () => {
@@ -643,6 +653,7 @@ export default function DhaminApp() {
           </nav>
         )}
 
+        {viewer && <AttachmentViewer attachment={viewer} onClose={() => setViewer(null)} onDownload={() => void downloadAttachment(viewer)} />}
         {withdrawConfirm && (
           <ConfirmDialog
             title="تأكيد الانسحاب"
@@ -682,6 +693,47 @@ function TaameedCard({ t, role, onPay }: { t: Taameed; role: Role; onPay: () => 
       ) : (
         <div className={`w-full py-3 rounded-xl text-center font-bold text-sm ${t.status === "paid" ? "bg-money-soft text-money" : "bg-gold-soft text-navy"}`}>{t.status === "paid" ? "التعميد نشط - قيد التنفيذ" : "بانتظار سداد العميل"}</div>
       )}
+    </div>
+  );
+}
+
+function AttachmentViewer({ attachment, onClose, onDownload }: { attachment: MsgAttachment; onClose: () => void; onDownload: () => void }) {
+  const isImage = attachment.mimeType.startsWith("image/");
+  const [url, setUrl] = useState<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    void supabase.storage.from(ATTACHMENTS_BUCKET).createSignedUrl(attachment.path, 300).then(async ({ data }) => {
+      if (!active || !data?.signedUrl) return;
+      setUrl(data.signedUrl);
+      try {
+        const res = await fetch(data.signedUrl);
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (active) setBlobUrl(URL.createObjectURL(blob));
+      } catch { /* fallback to signed url */ }
+    });
+    return () => { active = false; if (blobUrl) URL.revokeObjectURL(blobUrl); };
+  }, [attachment.path]);
+  const src = blobUrl ?? url;
+  return (
+    <div className="absolute inset-0 z-50 bg-navy-deep/95 flex flex-col" onClick={onClose}>
+      <div className="flex items-center justify-between px-4 py-3 text-navy-foreground shrink-0" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} aria-label="إغلاق"><X className="size-6" /></button>
+        <p className="text-sm font-bold truncate flex-1 text-center px-2">{attachment.name}</p>
+        <button onClick={onDownload} className="p-2" aria-label="تنزيل"><Download className="size-5" /></button>
+      </div>
+      <div className="flex-1 overflow-auto grid place-items-center p-4" onClick={(e) => e.stopPropagation()}>
+        {src ? (
+          isImage ? (
+            <img src={src} alt={attachment.name} className="max-w-full max-h-full object-contain rounded-lg" />
+          ) : (
+            <iframe src={src} title={attachment.name} className="w-full h-full min-h-[60vh] bg-white rounded-lg" />
+          )
+        ) : (
+          <Loader2 className="size-8 animate-spin text-navy-foreground/70" />
+        )}
+      </div>
     </div>
   );
 }
