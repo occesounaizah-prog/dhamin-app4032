@@ -1,16 +1,14 @@
-import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   Shield, Scale, Send, ArrowRight, Briefcase, Building2, Home, MessageSquare, Compass,
-  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye, CheckCheck, Check, Bell, Archive,
+  Wallet, CheckCircle2, Clock, Lock, CreditCard, X, Plus, Star, Filter, LogOut, FileText, AlertTriangle, Loader2, Paperclip, Download, BellRing, Image as ImageIcon, File as FileIcon, Eye,
 } from "lucide-react";
 import { ATTACHMENTS_BUCKET, supabase } from "@/lib/supabase";
 import {
   type Role, type TStatus, type Taameed, type Msg, type MsgAttachment, type OfferRow, type RequestRow, type ConversationRow,
   fetchRequests, fetchAllOffers, fetchConversations, fetchMessages, fetchTaameeds, fetchTaameedsByConversation,
-  insertRequest, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
+  insertRequest, insertOffer, incrementRequestBids, insertConversation, updateConversationPreview, insertMessage, insertTaameed, updateTaameedStatus,
   deleteTaameedsByConversation, insertDispute, fetchDispute,
-  insertOffer, updateOfferStatus, markMessagesRead, fetchUnreadCount, fetchTotalUnread,
-  updateConversationArchived, fetchArchivedConversations,
 } from "@/lib/dhamin-data";
 
 type Screen = "welcome" | "login" | "otp" | "home" | "offers" | "lounge" | "conversations" | "chat" | "proposal" | "payment" | "success" | "dashboard-detail";
@@ -22,9 +20,26 @@ const fmtSAR = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits:
 const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const now = () => new Date().toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
 
+const SESSION_KEY = "dhamin_session_v1";
+type SavedSession = { role: Role; loggedIn: boolean } | null;
+const loadSession = (): SavedSession => {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SavedSession;
+    if (parsed && (parsed.role === "client" || parsed.role === "muqeeb") && typeof parsed.loggedIn === "boolean") return parsed;
+    return null;
+  } catch { return null; }
+};
+const saveSession = (s: SavedSession) => {
+  try { if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+};
+const clearSession = () => saveSession(null);
+
 export default function DhaminApp() {
-  const [screen, setScreen] = useState<Screen>("welcome");
-  const [role, setRole] = useState<Role>("client");
+  const initialSession = loadSession();
+  const [screen, setScreen] = useState<Screen>(initialSession?.loggedIn ? "home" : "welcome");
+  const [role, setRole] = useState<Role>(initialSession?.role ?? "client");
   const [mobile, setMobile] = useState("");
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState(["", "", "", ""]);
@@ -48,14 +63,55 @@ export default function DhaminApp() {
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [bidSent, setBidSent] = useState<string[]>([]);
   const [newReq, setNewReq] = useState({ title: "", sector: "أبشر", desc: "" });
-  const [bidModalFor, setBidModalFor] = useState<RequestRow | null>(null);
-  const [unreadByConv, setUnreadByConv] = useState<Record<string, number>>({});
-  const [totalUnread, setTotalUnread] = useState(0);
-  const [lastMsgCount, setLastMsgCount] = useState(0);
-  const [archivedConversations, setArchivedConversations] = useState<ConversationRow[]>([]);
-  const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
+  const [offerModal, setOfferModal] = useState<RequestRow | null>(null);
+  const [disputeConfirm, setDisputeConfirm] = useState(false);
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const roleRef = useRef<Role>(role);
+  const screenRef = useRef<Screen>(screen);
+  const activeConvRef = useRef<string>(activeConversationId);
+  const audioRef = useRef<AudioContext | null>(null);
+  useEffect(() => { roleRef.current = role; }, [role]);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
+  useEffect(() => { activeConvRef.current = activeConversationId; }, [activeConversationId]);
 
-  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId && o.status === "pending");
+  const goHome = () => setScreen("home");
+  const logout = () => { clearSession(); setScreen("welcome"); };
+
+  useEffect(() => {
+    if (screen === "welcome" || screen === "login" || screen === "otp") return;
+    let pushed = false;
+    try { history.pushState({ dhamin: true }, ""); pushed = true; } catch { /* ignore */ }
+    const onPop = () => {
+      const cur = screenRef.current;
+      const subScreens: Screen[] = ["chat", "offers", "conversations", "lounge", "proposal", "dashboard-detail", "payment", "success"];
+      if (subScreens.includes(cur)) {
+        try { history.pushState({ dhamin: true }, ""); } catch { /* ignore */ }
+        goHome();
+      } else if (cur === "home") {
+        const now = Date.now();
+        if (lastBackRef.current && now - lastBackRef.current < 2000) {
+          lastBackRef.current = 0;
+          clearSession();
+          setScreen("welcome");
+        } else {
+          lastBackRef.current = now;
+          setBackToast(true);
+          try { history.pushState({ dhamin: true }, ""); } catch { /* ignore */ }
+          setTimeout(() => setBackToast(false), 1900);
+        }
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (pushed) try { history.back(); } catch { /* ignore */ }
+    };
+  }, [screen]);
+
+  const lastBackRef = useRef(0);
+  const [backToast, setBackToast] = useState(false);
+
+  const selectedOffers = allOffers.filter((o) => o.requestId === selectedRequestId);
 
   useEffect(() => {
     if (screen !== "otp" || timer === 0) return;
@@ -65,12 +121,11 @@ export default function DhaminApp() {
 
   const loadData = async () => {
     try {
-      const [reqs, convs, offers, taams, archived] = await Promise.all([fetchRequests(), fetchConversations(), fetchAllOffers(), fetchTaameeds(), fetchArchivedConversations()]);
+      const [reqs, convs, offers, taams] = await Promise.all([fetchRequests(), fetchConversations(), fetchAllOffers(), fetchTaameeds()]);
       setRequests(reqs);
       setConversations(convs);
       setAllOffers(offers);
       setTaameeds(taams);
-      setArchivedConversations(archived);
       setDataError("");
     } catch {
       setDataError("تعذر تحميل البيانات. تحقق من الاتصال.");
@@ -84,19 +139,20 @@ export default function DhaminApp() {
   useEffect(() => {
     const channel = supabase
       .channel("dhamin-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => { void fetchConversations().then(setConversations); void fetchArchivedConversations().then(setArchivedConversations); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => { void fetchConversations().then(setConversations); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => {
         const row = payload.new as { conversation_id: string; sender: string };
-        if (row?.conversation_id) {
-          void fetchMessages(row.conversation_id).then((msgs) => {
-            setMessagesByConversation((items) => ({ ...items, [row.conversation_id]: msgs }));
-            // Play notification for incoming messages (not from me, not system, not from chat screen for this conversation)
-            const isIncoming = row.sender !== "system" && row.sender !== role;
-            if (isIncoming && (screen !== "chat" || row.conversation_id !== activeConversationId)) {
-              playNotificationSound();
-            }
-          });
-          void refreshUnread();
+        if (!row?.conversation_id) return;
+        void fetchMessages(row.conversation_id).then((msgs) => setMessagesByConversation((items) => ({ ...items, [row.conversation_id]: msgs })));
+        const currentRole = roleRef.current;
+        const isOwnMessage = row.sender === currentRole;
+        const isSystem = row.sender === "system";
+        const isViewingThisChat = screenRef.current === "chat" && activeConvRef.current === row.conversation_id;
+        if (!isOwnMessage && !isSystem) {
+          playNotificationSound();
+          if (!isViewingThisChat) {
+            setUnread((u) => ({ ...u, [row.conversation_id]: (u[row.conversation_id] ?? 0) + 1 }));
+          }
         }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "taameeds" }, () => { void fetchTaameeds().then(setTaameeds); })
@@ -104,22 +160,7 @@ export default function DhaminApp() {
       .on("postgres_changes", { event: "*", schema: "public", table: "offers" }, () => { void fetchAllOffers().then(setAllOffers); })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [role, screen, activeConversationId]);
-
-  const refreshUnread = async () => {
-    try {
-      const total = await fetchTotalUnread(role);
-      setTotalUnread(total);
-      const convUnreads: Record<string, number> = {};
-      await Promise.all(conversations.map(async (c) => {
-        const count = await fetchUnreadCount(c.id, role);
-        if (count > 0) convUnreads[c.id] = count;
-      }));
-      setUnreadByConv(convUnreads);
-    } catch { /* ignore */ }
-  };
-
-  useEffect(() => { void refreshUnread(); }, [conversations, role]);
+  }, []);
 
   const loadMessages = async (conversationId: string) => {
     try {
@@ -146,6 +187,7 @@ export default function DhaminApp() {
 
   const currentConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const msgs = messagesByConversation[activeConversationId] ?? [];
+  const totalUnread = Object.values(unread).reduce((a, b) => a + b, 0);
 
   const sendMsg = () => {
     if (!typed.trim()) return;
@@ -160,9 +202,9 @@ export default function DhaminApp() {
 
   const openConversation = (conversationId: string) => {
     setActiveConversationId(conversationId);
+    setUnread((u) => { const n = { ...u }; delete n[conversationId]; return n; });
     void loadMessages(conversationId);
     void loadConversationTaameeds(conversationId);
-    void markMessagesRead(conversationId, role).then(() => void refreshUnread());
     setScreen("chat");
   };
 
@@ -212,19 +254,25 @@ export default function DhaminApp() {
   };
 
   const playNotificationSound = () => {
-    const audioContext = new AudioContext();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(660, audioContext.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(880, audioContext.currentTime + 0.12);
-    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.12, audioContext.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.3);
-    oscillator.connect(gain);
-    gain.connect(audioContext.destination);
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.3);
+    try {
+      const ctx = audioRef.current ?? new AudioContext();
+      if (ctx.state === "suspended") void ctx.resume();
+      audioRef.current = ctx;
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(660, ctx.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.3);
+    } catch {
+      /* AudioContext unavailable */
+    }
   };
 
   const notifyOtherParty = () => {
@@ -240,16 +288,14 @@ export default function DhaminApp() {
     if (screen === "chat") {
       void loadMessages(activeConversationId);
       void loadConversationTaameeds(activeConversationId);
-      void markMessagesRead(activeConversationId, role).then(() => void refreshUnread());
     }
-  }, [activeConversationId, screen, role]);
+  }, [activeConversationId, screen]);
 
   const acceptOffer = (offer: OfferRow) => {
     const request = requests.find((item) => item.id === selectedRequestId) ?? requests[0];
     const conversationId = `conv-${request.id}-${offer.id}`;
     setActiveOffer({ offer, request });
     setActiveConversationId(conversationId);
-    void updateOfferStatus(offer.id, "accepted");
     void insertConversation({ id: conversationId, request_id: request.id, title: request.title, client_name: "أبو يزن", provider_name: offer.muqeeb, last_message: "تم قبول العرض وبدأ التوافق.", last_message_time: now() }).then(() => {
       void insertMessage({ id: `m-${Date.now()}`, conversation_id: conversationId, sender: "system", text: `تم قبول عرض ${offer.muqeeb}. بدأت المحادثة للتوافق على التفاصيل قبل إنشاء التعميد.`, taameed_id: null, display_time: now() });
     }).catch(() => setDataError("تعذر إنشاء المحادثة."));
@@ -268,19 +314,14 @@ export default function DhaminApp() {
   };
 
   const withdrawFromAgreement = () => {
-    if (hasPaidTaameed) return;
-    const request = activeOffer?.request ?? requests.find((r) => r.id === currentConversation?.requestId);
-    const offerId = activeOffer?.offer?.id;
-    const requestId = request?.id ?? currentConversation?.requestId ?? "";
+    const request = activeOffer?.request;
+    if (!request || hasPaidTaameed) return;
     const time = now();
     void deleteTaameedsByConversation(activeConversationId).then(() => {
-      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع. أعيد الطلب إلى صالة العروض ويمكن لمقدم الخدمة تقديم عرض جديد.", taameed_id: null, display_time: time });
-      void updateConversationPreview(activeConversationId, "تم الانسحاب وأعيد الطلب للصالة", time);
-      void updateConversationArchived(activeConversationId, true);
-      if (offerId) void updateOfferStatus(offerId, "withdrawn");
+      void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم الانسحاب قبل الدفع وإعادة الطلب إلى صالة العروض للتقديم من جديد.", taameed_id: null, display_time: time });
+      void updateConversationPreview(activeConversationId, "عاد الطلب إلى صالة العروض", time);
     });
     setActiveOffer(null);
-    if (requestId) setBidSent((ids) => ids.filter((id) => id !== requestId));
     setScreen("lounge");
   };
 
@@ -294,12 +335,25 @@ export default function DhaminApp() {
   };
 
   const raiseDispute = () => {
-    if (!hasPaidTaameed) return;
+    if (!hasPaidTaameed || !disputeConfirm) return;
     const time = now();
     void insertDispute(activeConversationId).then(() => {
       void insertMessage({ id: `m-${Date.now()}`, conversation_id: activeConversationId, sender: "system", text: "تم رفع نزاع مالي إلى إدارة التحكيم وتجميد المبالغ المحجوزة.", taameed_id: null, display_time: time });
       void updateConversationPreview(activeConversationId, "تم رفع نزاع مالي", time);
     });
+    setDisputeConfirm(false);
+  };
+
+  const confirmRaiseDispute = () => setDisputeConfirm(true);
+
+  const submitOffer = (request: RequestRow, price: number, days: number, note: string) => {
+    const id = "O" + Date.now();
+    const muqeebName = "مكتب الرياض للتعقيب المعتمد";
+    void insertOffer({ id, request_id: request.id, muqeeb: muqeebName, rating: 4.8, price, days, note }).then(() => {
+      void incrementRequestBids(request.id);
+      setBidSent((b) => [...b, request.id]);
+    }).catch(() => setDataError("تعذر إرسال العرض."));
+    setOfferModal(null);
   };
 
   const openDashboardDetail = (title: string, nextScreen?: Screen) => {
@@ -310,8 +364,8 @@ export default function DhaminApp() {
   const inApp = !["welcome", "login", "otp", "payment", "success"].includes(screen);
 
   return (
-    <div dir="rtl" className="min-h-screen bg-surface flex justify-center sm:py-6">
-      <div className="relative w-full max-w-md bg-background sm:rounded-3xl shadow-elevated overflow-hidden flex flex-col min-h-screen sm:min-h-[860px]">
+    <div dir="rtl" className="h-[100dvh] bg-surface flex justify-center sm:py-6">
+      <div className="relative w-full max-w-md bg-background sm:rounded-3xl shadow-elevated overflow-hidden flex flex-col h-[100dvh] sm:h-[860px] sm:max-h-[calc(100dvh-3rem)]">
         {screen === "welcome" && (
           <div className="flex-1 flex flex-col bg-gradient-to-b from-navy to-navy-deep text-navy-foreground">
             <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 text-center">
@@ -365,18 +419,18 @@ export default function DhaminApp() {
             <p className="text-center text-sm text-muted-foreground">
               {timer > 0 ? <>إعادة الإرسال خلال <b className="text-navy">{timer}</b> ثانية</> : <button className="text-money font-bold" onClick={() => setTimer(60)}>إعادة إرسال الرمز</button>}
             </p>
-            <PrimaryBtn disabled={otp.join("").length < 4} onClick={() => setScreen("home")}>تحقق ومتابعة</PrimaryBtn>
+            <PrimaryBtn disabled={otp.join("").length < 4} onClick={() => { saveSession({ role, loggedIn: true }); setScreen("home"); }}>تحقق ومتابعة</PrimaryBtn>
             <p className="text-center text-xs text-muted-foreground">نموذج تجريبي: أدخل أي 4 أرقام</p>
           </div>
         )}
 
         {inApp && screen !== "chat" && (
-          <header className="bg-navy text-navy-foreground px-5 pt-6 pb-5 flex items-center justify-between">
+          <header className="bg-navy text-navy-foreground px-5 pt-6 pb-5 flex items-center justify-between shrink-0">
             <div>
               <p className="text-xs text-navy-foreground/60">{role === "client" ? "لوحة تحكم العميل" : "لوحة تحكم مقدم الخدمة"}</p>
               <h1 className="text-xl font-black flex items-center gap-2"><Shield className="size-5 text-gold" /> {role === "client" ? "أبو يزن" : "مكتب الرياض للتعقيب المعتمد"}</h1>
             </div>
-            <button onClick={() => setScreen("welcome")} className="p-2 rounded-xl bg-navy-foreground/10" aria-label="خروج"><LogOut className="size-5" /></button>
+            <button onClick={logout} className="p-2 rounded-xl bg-navy-foreground/10" aria-label="خروج"><LogOut className="size-5" /></button>
           </header>
         )}
 
@@ -423,7 +477,6 @@ export default function DhaminApp() {
             <div className="space-y-2">
               {requests.map((request) => <button key={request.id} onClick={() => setSelectedRequestId(request.id)} className={`w-full text-right rounded-xl border p-3 ${selectedRequestId === request.id ? "border-money bg-money-soft" : "bg-background"}`}><p className="font-bold text-sm">{request.title}</p><p className="text-xs text-muted-foreground mt-1">{request.bids} عروض متاحة</p></button>)}
             </div>
-            {selectedOffers.length === 0 && <p className="text-center text-sm text-muted-foreground py-8">لا توجد عروض متاحة لهذه المعاملة حالياً.</p>}
             {selectedOffers.map((o) => (
               <div key={o.id} className="rounded-2xl border p-4 shadow-card space-y-3">
                 <div className="flex justify-between items-start">
@@ -432,11 +485,7 @@ export default function DhaminApp() {
                 </div>
                 <p className="text-sm text-muted-foreground">{o.note}</p>
                 <div className="flex items-center gap-1 text-sm text-navy"><Clock className="size-4" /> مدة الإنجاز: {o.days} أيام</div>
-                {o.status === "pending" ? (
-                  <PrimaryBtn onClick={() => acceptOffer(o)}>موافقة وتفاهم — فتح المحادثة</PrimaryBtn>
-                ) : (
-                  <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تمت الموافقة ونقل المعاملة للمحادثات</p>
-                )}
+                <PrimaryBtn onClick={() => acceptOffer(o)}>قبول العرض وفتح المحادثة</PrimaryBtn>
               </div>
             ))}
           </main>
@@ -456,26 +505,18 @@ export default function DhaminApp() {
               <div><h2 className="font-black text-lg text-navy">المحادثات</h2><p className="text-sm text-muted-foreground">محادثة مستقلة لكل معاملة</p></div>
               <MessageSquare className="text-money" />
             </div>
-            {conversations.length === 0 && <p className="text-center text-sm text-muted-foreground py-8">لا توجد محادثات نشطة حالياً.</p>}
-            {conversations.map((conversation) => (
-              <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border p-4 shadow-card space-y-2 transition hover:border-money">
+            {conversations.map((conversation) => {
+              const u = unread[conversation.id] ?? 0;
+              return (
+              <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border p-4 shadow-card space-y-2 transition hover:border-money relative">
+                {u > 0 && <span className="absolute top-3 left-3 min-w-5 h-5 px-1.5 rounded-full bg-destructive text-white text-[10px] font-black grid place-items-center">{u}</span>}
                 <div className="flex items-start gap-3">
                   <div className="size-11 rounded-xl bg-money-soft text-money grid place-items-center shrink-0"><MessageSquare className="size-5" /></div>
-                  <div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className="font-bold truncate">{conversation.title}</p><span className="text-xs text-muted-foreground whitespace-nowrap">{conversation.time}</span></div><p className="text-xs text-navy mt-1">{role === "client" ? conversation.providerName : conversation.clientName}</p><div className="flex items-center gap-2 mt-1"><p className="text-sm text-muted-foreground truncate flex-1">{conversation.lastMessage}</p>{(unreadByConv[conversation.id] ?? 0) > 0 && <span className="shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-money text-money-foreground text-[10px] font-black grid place-items-center">{unreadByConv[conversation.id]}</span>}</div></div>
+                  <div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className={`truncate ${u > 0 ? "font-black" : "font-bold"}`}>{conversation.title}</p><span className="text-xs text-muted-foreground whitespace-nowrap">{conversation.time}</span></div><p className="text-xs text-navy mt-1">{role === "client" ? conversation.providerName : conversation.clientName}</p><p className={`text-sm truncate mt-1 ${u > 0 ? "text-foreground font-medium" : "text-muted-foreground"}`}>{conversation.lastMessage}</p></div>
                 </div>
               </button>
-            ))}
-            {archivedConversations.length > 0 && (
-              <div className="pt-4 space-y-2">
-                <h3 className="font-bold text-sm text-muted-foreground">الأرشيف</h3>
-                {archivedConversations.map((conversation) => (
-                  <button key={conversation.id} onClick={() => openConversation(conversation.id)} className="w-full text-right rounded-2xl border border-dashed p-3 space-y-1 opacity-60 hover:opacity-100 transition">
-                    <div className="flex items-center gap-2"><Archive className="size-4 text-muted-foreground" /><p className="font-bold text-sm truncate flex-1">{conversation.title}</p></div>
-                    <p className="text-xs text-muted-foreground">{conversation.lastMessage}</p>
-                  </button>
-                ))}
-              </div>
-            )}
+              );
+            })}
           </main>
         )}
 
@@ -508,8 +549,8 @@ export default function DhaminApp() {
                 <p className="text-sm text-muted-foreground">{r.desc}</p>
                 {role === "muqeeb" ? (
                   bidSent.includes(r.id)
-                    ? <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تم إرسال عرضك وهو قيد انتظار موافقة العميل</p>
-                    : <PrimaryBtn onClick={() => setBidModalFor(r)}>تقديم عرض سعر</PrimaryBtn>
+                    ? <p className="text-sm text-money font-bold flex items-center gap-1"><CheckCircle2 className="size-4" /> تم إرسال عرضك</p>
+                    : <PrimaryBtn onClick={() => setOfferModal(r)}>تقديم عرض سعر فوري</PrimaryBtn>
                 ) : (
                   <button onClick={() => { setSelectedRequestId(r.id); setScreen("offers"); }} className="text-sm font-bold text-navy">مقارنة عروض هذه المعاملة ←</button>
                 )}
@@ -529,8 +570,8 @@ export default function DhaminApp() {
                 <p className="text-xs text-navy-foreground/60">{hasPaidTaameed ? "⚠️ تحت التحكيم المالي" : "متصل الآن"}</p>
               </div>
               <div className="flex items-center gap-2">
-                {!hasPaidTaameed && <button onClick={() => setShowWithdrawConfirm(true)} className="h-10 px-3 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card text-xs font-bold gap-1 flex items-center"><X className="size-4" /> انسحاب</button>}
-                {hasPaidTaameed && <button onClick={raiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
+                {hasPendingTaameed && <button onClick={withdrawFromAgreement} className="size-10 rounded-full bg-gold-soft text-navy grid place-items-center shadow-card" aria-label="الانسحاب وإعادة الطلب للصالة"><X className="size-5" /></button>}
+                {hasPaidTaameed && <button onClick={confirmRaiseDispute} className="size-10 rounded-full bg-destructive grid place-items-center shadow-card" aria-label="رفع نزاع"><Scale className="size-5 text-navy-foreground" /></button>}
                 <button onClick={notifyOtherParty} className="size-10 rounded-full bg-money-soft text-money grid place-items-center shadow-card" aria-label="إرسال تنبيه للطرف الآخر"><BellRing className="size-5" /></button>
               </div>
             </header>
@@ -542,7 +583,7 @@ export default function DhaminApp() {
                 if (t) {
                   return (
                     <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
-                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} />
+                      <TaameedCard t={t} role={role} onPay={() => { setPayFor(t.id); setScreen("payment"); }} onWithdraw={withdrawFromAgreement} />
                     </div>
                   );
                 }
@@ -557,13 +598,7 @@ export default function DhaminApp() {
                 return (
                   <div key={m.id} className={`flex ${mine ? "justify-start" : "justify-end"}`}>
                     <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-6 ${mine ? "bg-money text-money-foreground rounded-tr-sm" : "bg-background border rounded-tl-sm"}`}>
-                      {m.text}
-                      <div className={`flex items-center gap-1 mt-1 ${mine ? "justify-end" : "justify-start"}`}>
-                        <p className={`text-[10px] ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
-                        {mine && (
-                          m.readAt ? <CheckCheck className="size-3.5 text-money-foreground/80" /> : <Check className="size-3.5 text-money-foreground/50" />
-                        )}
-                      </div>
+                      {m.text}<p className={`text-[10px] mt-1 ${mine ? "text-money-foreground/70" : "text-muted-foreground"}`}>{m.time}</p>
                     </div>
                   </div>
                 );
@@ -597,47 +632,27 @@ export default function DhaminApp() {
           <nav className="bg-background border-t grid grid-cols-4 py-2 shrink-0">
             <NavBtn icon={<Home />} label="الرئيسية" active={screen === "home"} onClick={() => setScreen("home")} />
             <NavBtn icon={<Compass />} label="الصالة" active={screen === "lounge"} onClick={() => setScreen("lounge")} />
-            <NavBtn icon={<><div className="relative"><MessageSquare /><span className="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-money text-money-foreground text-[8px] font-black grid place-items-center" style={{ display: totalUnread > 0 ? "grid" : "none" }}>{totalUnread}</span></div></>} label="المحادثات" active={screen === "conversations"} onClick={() => setScreen("conversations")} />
+            <NavBtn icon={<MessageSquare />} label="المحادثات" active={screen === "conversations"} onClick={() => setScreen("conversations")} badge={totalUnread} />
             {role === "client"
               ? <NavBtn icon={<Wallet />} label="العروض" active={screen === "offers"} onClick={() => setScreen("offers")} />
               : <NavBtn icon={<FileText />} label="عرض سعر" active={screen === "proposal"} onClick={() => setScreen("proposal")} />}
           </nav>
         )}
 
-        {showWithdrawConfirm && (
-          <div className="absolute inset-0 z-30 bg-navy-deep/60 grid place-items-center p-6" onClick={() => setShowWithdrawConfirm(false)}>
-            <div onClick={(e) => e.stopPropagation()} className="bg-background rounded-2xl p-6 space-y-4 max-w-sm w-full text-center animate-in zoom-in">
-              <div className="size-14 rounded-full bg-gold-soft grid place-items-center mx-auto"><AlertTriangle className="size-7 text-gold" /></div>
-              <h3 className="font-black text-lg text-navy">تأكيد الانسحاب</h3>
-              <p className="text-sm text-muted-foreground leading-6">سيتم إغلاق هذه المحادثة وإعادتها إلى صالة العروض. يمكن للعميل قبول عرض آخر، ويمكن لمقدم الخدمة تقديم عرض جديد على نفس المعاملة.</p>
-              <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowWithdrawConfirm(false)} className="flex-1 py-3 rounded-xl border font-bold text-sm">إلغاء</button>
-                <button onClick={() => { setShowWithdrawConfirm(false); withdrawFromAgreement(); }} className="flex-1 py-3 rounded-xl bg-destructive text-destructive-foreground font-black text-sm">نعم، انسحاب</button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {sheet && <CreateTaameedSheet onClose={() => setSheet(false)} onSubmit={createTaameed} />}
-
-        {bidModalFor && (
-          <BidModal
-            request={bidModalFor}
-            onClose={() => setBidModalFor(null)}
-            onSubmit={(details, price, days) => {
-              const offerId = "O" + Date.now();
-              void insertOffer({ id: offerId, request_id: bidModalFor.id, muqeeb: "مكتب الرياض للتعقيب", rating: 4.9, price, days, note: details, status: "pending" });
-              setBidSent([...bidSent, bidModalFor.id]);
-              setBidModalFor(null);
-            }}
-          />
+        {offerModal && <OfferSheet request={offerModal} onClose={() => setOfferModal(null)} onSubmit={(price, days, note) => submitOffer(offerModal, price, days, note)} />}
+        {disputeConfirm && <ConfirmDialog title="تأكيد رفع النزاع" message="سيتم رفع نزاع مالي إلى إدارة التحكيم وتجميد المبالغ المحجوزة لحين البت. هل أنت متأكد؟" confirmLabel="نعم، رفع النزاع" destructive onConfirm={raiseDispute} onCancel={() => setDisputeConfirm(false)} />}
+        {backToast && (
+          <div className="absolute bottom-24 inset-x-0 z-40 flex justify-center pointer-events-none">
+            <div className="bg-navy-deep/95 text-navy-foreground text-sm font-bold px-4 py-2.5 rounded-full shadow-elevated">اضغط زر الرجوع مرة أخرى للخروج</div>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function TaameedCard({ t, role, onPay }: { t: Taameed; role: Role; onPay: () => void }) {
+function TaameedCard({ t, role, onPay, onWithdraw }: { t: Taameed; role: Role; onPay: () => void; onWithdraw: () => void }) {
   return (
     <div className="w-[88%] bg-background rounded-2xl border-2 border-gold/60 shadow-card p-4 space-y-3">
       <div className="flex items-center gap-2"><Shield className="size-5 text-gold fill-gold/20" /><p className="font-black text-navy">طلب تعميد مالي رسمي</p><span className="mr-auto text-[10px] text-muted-foreground">{t.id}</span></div>
@@ -653,7 +668,7 @@ function TaameedCard({ t, role, onPay }: { t: Taameed; role: Role; onPay: () => 
       ) : (
         <div className={`w-full py-3 rounded-xl text-center font-bold text-sm ${t.status === "paid" ? "bg-money-soft text-money" : "bg-gold-soft text-navy"}`}>{t.status === "paid" ? "التعميد نشط - قيد التنفيذ" : "بانتظار سداد العميل"}</div>
       )}
-
+      {t.status === "pending_payment" && <button onClick={onWithdraw} className="w-full py-2.5 rounded-xl border border-destructive/30 text-destructive font-bold text-sm">الانسحاب وإعادة الطلب إلى الصالة</button>}
     </div>
   );
 }
@@ -697,6 +712,40 @@ function AttachmentBubble({ attachment, mine, time, onView, onDownload }: { atta
       <div className="flex items-center gap-1 shrink-0">
         <button onClick={onView} className={`p-2 rounded-lg ${mine ? "hover:bg-money-foreground/10" : "hover:bg-surface"}`} aria-label="عرض الملف"><Eye className="size-4" /></button>
         <button onClick={onDownload} className={`p-2 rounded-lg ${mine ? "hover:bg-money-foreground/10" : "hover:bg-surface"}`} aria-label="تحميل الملف"><Download className="size-4" /></button>
+      </div>
+    </div>
+  );
+}
+
+function OfferSheet({ request, onClose, onSubmit }: { request: RequestRow; onClose: () => void; onSubmit: (price: number, days: number, note: string) => void }) {
+  const [price, setPrice] = useState("");
+  const [days, setDays] = useState("");
+  const [note, setNote] = useState("");
+  return (
+    <div className="absolute inset-0 z-20 bg-navy-deep/60 flex items-end" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full bg-background rounded-t-3xl p-5 space-y-3 animate-in slide-in-from-bottom">
+        <div className="mx-auto w-12 h-1.5 rounded-full bg-border" />
+        <div className="flex justify-between items-center"><div><h3 className="font-black text-lg text-navy">تقديم عرض سعر</h3><p className="text-xs text-muted-foreground">{request.title}</p></div><button onClick={onClose} aria-label="إغلاق"><X /></button></div>
+        <Field label="السعر التقريبي (ر.س)"><input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" className="w-full rounded-xl border px-3 py-3 outline-none font-bold text-money" placeholder="0" /></Field>
+        <Field label="مدة الإنجاز (أيام)"><input value={days} onChange={(e) => setDays(e.target.value.replace(/\D/g, ""))} inputMode="numeric" className="w-full rounded-xl border px-3 py-3 outline-none" placeholder="0" /></Field>
+        <Field label="نص العرض وملاحظاته"><textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} className="w-full rounded-xl border px-3 py-3 outline-none" placeholder="اشرح منهجية التنفيذ والملاحظات..." /></Field>
+        <PrimaryBtn disabled={!Number(price) || !Number(days)} onClick={() => onSubmit(Number(price), Number(days), note || "عرض سعر احترافي مع ضمان الجودة.")}>إرسال العرض للعميل</PrimaryBtn>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({ title, message, confirmLabel, destructive, onConfirm, onCancel }: { title: string; message: string; confirmLabel: string; destructive?: boolean; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="absolute inset-0 z-30 bg-navy-deep/60 grid place-items-center p-6" onClick={onCancel}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full bg-background rounded-3xl p-5 space-y-4 shadow-elevated animate-in zoom-in">
+        <div className="size-14 rounded-2xl bg-destructive/10 grid place-items-center mx-auto"><AlertTriangle className="size-7 text-destructive" /></div>
+        <h3 className="font-black text-lg text-navy text-center">{title}</h3>
+        <p className="text-sm text-muted-foreground text-center leading-6">{message}</p>
+        <div className="flex gap-2">
+          <button onClick={onCancel} className="flex-1 py-3 rounded-xl border font-bold text-sm">إلغاء</button>
+          <button onClick={onConfirm} className={`flex-1 py-3 rounded-xl font-black text-sm text-white ${destructive ? "bg-destructive" : "bg-money"}`}>{confirmLabel}</button>
+        </div>
       </div>
     </div>
   );
@@ -763,30 +812,6 @@ function PaymentScreen({ t, onBack, onDone }: { t: Taameed; onBack: () => void; 
   );
 }
 
-function BidModal({ request, onClose, onSubmit }: { request: RequestRow; onClose: () => void; onSubmit: (details: string, price: number, days: number) => void }) {
-  const [details, setDetails] = useState("");
-  const [price, setPrice] = useState("");
-  const [days, setDays] = useState("");
-  return (
-    <div className="absolute inset-0 z-20 bg-navy-deep/60 flex items-end" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full bg-background rounded-t-3xl p-5 space-y-3 animate-in slide-in-from-bottom">
-        <div className="mx-auto w-12 h-1.5 rounded-full bg-border" />
-        <div className="flex justify-between items-center">
-          <div><h3 className="font-black text-lg text-navy">تقديم عرض سعر</h3><p className="text-xs text-muted-foreground mt-0.5">{request.title}</p></div>
-          <button onClick={onClose} aria-label="إغلاق"><X /></button>
-        </div>
-        <Field label="تفاصيل العرض"><textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={3} className="w-full rounded-xl border px-3 py-3 outline-none" placeholder="اشرح منهجية التنفيذ والملاحظات..." /></Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="السعر التقريبي (ر.س)"><input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" className="w-full rounded-xl border px-3 py-3 outline-none font-bold text-money" /></Field>
-          <Field label="مدة الإنجاز (أيام)"><input value={days} onChange={(e) => setDays(e.target.value.replace(/\D/g, ""))} inputMode="numeric" className="w-full rounded-xl border px-3 py-3 outline-none" /></Field>
-        </div>
-        <div className="rounded-xl bg-gold-soft p-3 text-xs text-navy leading-6 flex gap-2"><CheckCircle2 className="size-4 shrink-0 mt-0.5" /> سيتم إرسال عرضك للعميل بانتظار موافقته. لا يتم القبول فورياً حتى يوافق العميل ويتوافق معك.</div>
-        <PrimaryBtn disabled={!details || !Number(price) || !Number(days)} onClick={() => onSubmit(details, Number(price), Number(days))}>إرسال العرض للعميل</PrimaryBtn>
-      </div>
-    </div>
-  );
-}
-
 function ProposalBuilder({ onBack, onSubmit }: { onBack: () => void; onSubmit: () => void }) {
   const [steps, setSteps] = useState(["مراجعة المستندات", "رفع الطلب للجهة", "التسليم النهائي"]);
   const [price, setPrice] = useState("");
@@ -848,6 +873,14 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function Row({ k, v }: { k: string; v: ReactNode }) {
   return <div className="flex justify-between"><span className="text-muted-foreground">{k}</span><span className="font-bold">{v}</span></div>;
 }
-function NavBtn({ icon, label, active, onClick }: { icon: ReactNode; label: string; active: boolean; onClick: () => void }) {
-  return <button onClick={onClick} className={`flex flex-col items-center gap-0.5 text-xs [&_svg]:size-5 ${active ? "text-money font-bold" : "text-muted-foreground"}`}>{icon}{label}</button>;
+function NavBtn({ icon, label, active, onClick, badge }: { icon: ReactNode; label: string; active: boolean; onClick: () => void; badge?: number }) {
+  return (
+    <button onClick={onClick} className={`flex flex-col items-center gap-0.5 text-xs [&_svg]:size-5 relative ${active ? "text-money font-bold" : "text-muted-foreground"}`}>
+      <span className="relative">
+        {icon}
+        {badge && badge > 0 ? <span className="absolute -top-1.5 -left-1.5 min-w-4 h-4 px-1 rounded-full bg-destructive text-white text-[9px] font-black grid place-items-center">{badge > 9 ? "9+" : badge}</span> : null}
+      </span>
+      {label}
+    </button>
+  );
 }
